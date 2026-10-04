@@ -1,0 +1,4 @@
+logo_b64.txt
+*.bak
+battmon_old_backup.pyw
+__pycache__/
