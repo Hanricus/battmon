@@ -2,7 +2,7 @@
 
 A small floating battery monitor for Windows laptops, with charge limit (cutoff) control on supported Dell machines.
 
-Made by Me[Abdul Shakir Hakim](https://www.linkedin.com/in/abdulshakirhakim/).
+Made by [Abdul Shakir Hakim](https://www.linkedin.com/in/abdulshakirhakim/).
 
 ## Features
 
