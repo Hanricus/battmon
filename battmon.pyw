@@ -4,12 +4,15 @@ if sys.platform != "win32":
     sys.exit()
 
 import ctypes, ctypes.wintypes, time, csv, os, re, subprocess, threading, json, webbrowser
-import urllib.request
-from collections import deque
+import tempfile
+import urllib.request, urllib.parse
+import xml.etree.ElementTree as ET
+import html as _html
+from collections import deque, Counter
 from datetime import datetime
 
 # ================= INFO =================
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 REPO = "Hanricus/battmon"          # change if your repo name is different
 LINKEDIN = "https://www.linkedin.com/in/abdulshakirhakim/"
 GITHUB = "https://github.com/Hanricus"
@@ -52,7 +55,7 @@ STR = {
         "fail": "BIOS did not accept it. Current: {mode} {start}-{stop}  ({out})",
         "fail_hint": " The BIOS may have an admin password or an IT policy.",
         "num_err": "Limit must be a number",
-        "note_other": "Monitor-only mode. This is a {brand} laptop. Charge limit control only supports Dell for now. You can still use the vendor's own tool (for example Lenovo Vantage, MyASUS or the battery setting in HP BIOS).",
+        "note_other": "Monitor-only mode. This is a {brand} laptop. Charge limit control only supports Dell for now. Open the battery report for where to find your brand's own tool.",
         "note_nobios": "Monitor-only mode. This Dell BIOS does not expose charge controls, or the app has no admin access.",
         "note_pw": "A BIOS admin password is set. Changing the charge limit will fail unless IT unlocks it.",
         "no_battery": "No battery found on this machine.\n\nwhy we still here just to suffer hahahaha\n\n(Desktop PC? No battery, nothing to control.)",
@@ -61,17 +64,41 @@ STR = {
         "upd_bad": "invalid update file",
         "banner": "⬆ Update {tag} available. Click to update",
         "banner_exe": "⬆ Update {tag} available. Click to open the download page",
-        "check": "System check",
-        "rep_title": "System check",
-        "rep_laptop": "Laptop: {v}", "rep_batt": "Battery: found", "rep_admin": "Admin rights: {v}",
-        "rep_bios": "BIOS charge interface: {v}", "rep_custom": "Custom charge limit: {v}",
-        "rep_pw": "BIOS admin password: {v}",
-        "rep_restart": "Restart needed: no, charge settings apply immediately",
-        "yes": "yes", "no": "no", "found": "found", "notfound": "not found",
-        "supported": "supported", "unsupported": "not supported",
-        "pw_set": "SET (changes will fail)", "pw_none": "not set", "unknown": "unknown",
         "tray_open": "Open battmon", "tray_exit": "Exit",
+        "tray_ask": "battmon needs two small packages (pystray and pillow) so the close button keeps it running in the tray instead of quitting.\n\nInstall them now?",
+        "tray_fail": "Could not install tray support. Closing the window will quit battmon.\n\nYou can install it yourself later: pip install pystray pillow",
+        "close_quit": "Tray support is not installed, so closing will quit battmon. Quit now?",
         "h_min": "{h} h {m} min",
+        # report
+        "check": "Battery report", "rep_win_title": "battmon - battery report",
+        "rep_title": "battmon battery report", "loading": "Collecting battery data...",
+        "sec_laptop": "LAPTOP", "sec_charge": "CHARGE CUTOFF / BYPASS",
+        "sec_observed": "OBSERVED BEHAVIOUR (battmon log)", "sec_notes": "NOTES",
+        "l_maker": "Manufacturer", "l_model": "Model", "l_bios": "BIOS version", "l_biosdate": "BIOS date",
+        "l_admin": "Admin rights", "l_tray": "Tray support (close button keeps it running)",
+        "l_battery_n": "BATTERY {n}", "l_id": "Name / ID", "l_chem": "Chemistry",
+        "l_serial": "Serial (masked)", "l_mfgdate": "Manufacture date", "l_now": "Charge now",
+        "l_verdict": "Health verdict",
+        "nr": "not reported", "yes": "yes", "no": "no",
+        "v_good": "good (80% or more)", "v_worn": "worn (60 to 79%)",
+        "v_weak": "weak (below 60%), consider replacing",
+        "mfg_note": "Many laptops do not report the battery manufacture date. The BIOS date above is the laptop's firmware date, not the battery's age. Health verdict is a rough guide only.",
+        "charge_dell_ok": "Supported. battmon can set a cutoff limit (50, 80 or 90%) on this Dell through the BIOS.",
+        "charge_dell_modes": "Dell BIOS charge modes (Full, Hold AC) are available. A custom limit is not offered on this model.",
+        "charge_dell_no": "This is a Dell, but the BIOS charge interface is not available (or the app has no admin access).",
+        "charge_vendor": "Many {name} models offer a charge limit (cutoff) through a vendor tool or the BIOS. It depends on the exact model. battmon cannot control it yet.",
+        "charge_unknown": "No known charge limit tool for this brand. Check the manufacturer's PC app or the BIOS power/battery page. Windows itself has no charge limit setting.",
+        "bypass_note": "True bypass (battery fully taken out of the power path) is rare, mostly on some gaming laptops, and battmon cannot detect it. If your vendor tool offers 'bypass', that is it.",
+        "guide": "Where to look: ",
+        "tool_found": "Vendor tool found on this PC: {v}",
+        "tool_missing": "Vendor tool not found on this PC (looked for: {v}).",
+        "obs_none": "Not enough data yet. Leave battmon running while plugged in.",
+        "obs_range": "Log range: {a} to {b}. Lowest {lo}%, highest {hi}%.",
+        "obs_hold": "On AC it held at {p}% ({n} samples). That looks like a charge cutoff.",
+        "obs_full": "On AC it held at 100% ({n} samples). Normal full charge, no cutoff seen yet.",
+        "gen": "Generated {t} by battmon v{v}",
+        "btn_save": "Save report", "btn_store": "Find vendor tool", "btn_close": "Close",
+        "saved": "Report saved:\n{p}", "save_fail": "Could not save: {err}",
     },
     "ms": {
         "st_batt": "Guna bateri", "st_charging": "Sedang mengecas", "st_slow": "Cas perlahan",
@@ -95,7 +122,7 @@ STR = {
         "fail": "BIOS tidak terima. Sekarang: {mode} {start}-{stop}  ({out})",
         "fail_hint": " BIOS mungkin ada password admin atau polisi IT.",
         "num_err": "Had mesti nombor",
-        "note_other": "Mod monitor sahaja. Ini laptop {brand}. Kawalan had cas hanya sokong Dell buat masa ini. Anda masih boleh guna tool pengeluar sendiri (contoh Lenovo Vantage, MyASUS atau tetapan bateri dalam BIOS HP).",
+        "note_other": "Mod monitor sahaja. Ini laptop {brand}. Kawalan had cas hanya sokong Dell buat masa ini. Buka laporan bateri untuk tahu di mana nak cari tool jenama anda.",
         "note_nobios": "Mod monitor sahaja. BIOS Dell ini tidak dedahkan kawalan cas, atau app tiada akses admin.",
         "note_pw": "Password admin BIOS ditetapkan. Menukar had cas akan gagal kecuali IT buka kunci.",
         "no_battery": "Tiada bateri dijumpai pada mesin ini.\n\nwhy we still here just to suffer hahahaha\n\n(PC desktop? Tiada bateri, tiada apa nak dikawal.)",
@@ -104,25 +131,50 @@ STR = {
         "upd_bad": "fail kemas kini tidak sah",
         "banner": "⬆ Kemas kini {tag} tersedia. Klik untuk kemas kini",
         "banner_exe": "⬆ Kemas kini {tag} tersedia. Klik untuk buka laman muat turun",
-        "check": "Semakan sistem",
-        "rep_title": "Semakan sistem",
-        "rep_laptop": "Laptop: {v}", "rep_batt": "Bateri: ada", "rep_admin": "Hak admin: {v}",
-        "rep_bios": "Antara muka cas BIOS: {v}", "rep_custom": "Had cas Custom: {v}",
-        "rep_pw": "Password admin BIOS: {v}",
-        "rep_restart": "Perlu restart: tidak, tetapan cas berkuat kuasa terus",
-        "yes": "ya", "no": "tidak", "found": "ada", "notfound": "tiada",
-        "supported": "disokong", "unsupported": "tidak disokong",
-        "pw_set": "DITETAPKAN (tukar akan gagal)", "pw_none": "tidak ditetapkan", "unknown": "tidak diketahui",
         "tray_open": "Buka battmon", "tray_exit": "Keluar",
+        "tray_ask": "battmon perlukan dua pakej kecil (pystray dan pillow) supaya butang tutup sorok app ke tray dan bukan menutupnya.\n\nPasang sekarang?",
+        "tray_fail": "Gagal memasang sokongan tray. Menutup tetingkap akan menutup battmon.\n\nAnda boleh pasang sendiri kemudian: pip install pystray pillow",
+        "close_quit": "Sokongan tray tidak dipasang, jadi menutup akan menutup battmon. Keluar sekarang?",
         "h_min": "{h} j {m} min",
+        # report
+        "check": "Laporan bateri", "rep_win_title": "battmon - laporan bateri",
+        "rep_title": "Laporan bateri battmon", "loading": "Mengumpul data bateri...",
+        "sec_laptop": "LAPTOP", "sec_charge": "CUTOFF / BYPASS CAS",
+        "sec_observed": "KELAKUAN DIPERHATI (log battmon)", "sec_notes": "NOTA",
+        "l_maker": "Pengeluar", "l_model": "Model", "l_bios": "Versi BIOS", "l_biosdate": "Tarikh BIOS",
+        "l_admin": "Hak admin", "l_tray": "Sokongan tray (butang tutup kekalkan app berjalan)",
+        "l_battery_n": "BATERI {n}", "l_id": "Nama / ID", "l_chem": "Kimia",
+        "l_serial": "Siri (disorok)", "l_mfgdate": "Tarikh dibuat", "l_now": "Cas sekarang",
+        "l_verdict": "Penilaian kesihatan",
+        "nr": "tidak dilaporkan", "yes": "ya", "no": "tidak",
+        "v_good": "baik (80% ke atas)", "v_worn": "haus (60 hingga 79%)",
+        "v_weak": "lemah (bawah 60%), pertimbang tukar",
+        "mfg_note": "Kebanyakan laptop tidak melaporkan tarikh bateri dibuat. Tarikh BIOS di atas ialah tarikh firmware laptop, bukan umur bateri. Penilaian kesihatan hanyalah panduan kasar.",
+        "charge_dell_ok": "Disokong. battmon boleh tetapkan had cutoff (50, 80 atau 90%) pada Dell ini melalui BIOS.",
+        "charge_dell_modes": "Mod cas BIOS Dell (Penuh, Hold AC) tersedia. Had custom tidak ditawarkan pada model ini.",
+        "charge_dell_no": "Ini Dell, tetapi antara muka cas BIOS tidak tersedia (atau app tiada akses admin).",
+        "charge_vendor": "Banyak model {name} menawarkan had cas (cutoff) melalui tool pengeluar atau BIOS. Ia bergantung pada model tepat. battmon belum boleh mengawalnya.",
+        "charge_unknown": "Tiada tool had cas yang diketahui untuk jenama ini. Semak app PC pengeluar atau halaman kuasa/bateri dalam BIOS. Windows sendiri tiada tetapan had cas.",
+        "bypass_note": "Bypass sebenar (bateri diasingkan sepenuhnya dari laluan kuasa) jarang ada, kebanyakannya pada sesetengah laptop gaming, dan battmon tidak boleh mengesannya. Kalau tool pengeluar ada pilihan 'bypass', itulah dia.",
+        "guide": "Tempat untuk cari: ",
+        "tool_found": "Tool pengeluar dijumpai pada PC ini: {v}",
+        "tool_missing": "Tool pengeluar tidak dijumpai pada PC ini (dicari: {v}).",
+        "obs_none": "Data belum cukup. Biarkan battmon berjalan semasa dipalam.",
+        "obs_range": "Julat log: {a} hingga {b}. Paling rendah {lo}%, paling tinggi {hi}%.",
+        "obs_hold": "Semasa dipalam, ia kekal pada {p}% ({n} sampel). Nampak seperti cutoff cas.",
+        "obs_full": "Semasa dipalam, ia kekal pada 100% ({n} sampel). Cas penuh biasa, belum nampak cutoff.",
+        "gen": "Dijana {t} oleh battmon v{v}",
+        "btn_save": "Simpan laporan", "btn_store": "Cari tool pengeluar", "btn_close": "Tutup",
+        "saved": "Laporan disimpan:\n{p}", "save_fail": "Gagal simpan: {err}",
     },
 }
-cfg = {"lang": "en"}
+cfg = {"lang": "en", "no_tray_install": False}
 try:
     with open(CFG_FILE, encoding="utf-8") as f:
-        _l = json.load(f).get("lang")
-        if _l in STR:
-            cfg["lang"] = _l
+        _d = json.load(f)
+        if _d.get("lang") in STR:
+            cfg["lang"] = _d["lang"]
+        cfg["no_tray_install"] = bool(_d.get("no_tray_install", False))
 except Exception:
     pass
 
@@ -130,7 +182,7 @@ except Exception:
 def save_cfg():
     try:
         with open(CFG_FILE, "w", encoding="utf-8") as f:
-            json.dump({"lang": cfg["lang"]}, f)
+            json.dump(cfg, f)
     except Exception:
         pass
 
@@ -138,6 +190,237 @@ def save_cfg():
 def T(k, **kw):
     s = STR[cfg["lang"]].get(k) or STR["en"][k]
     return s.format(**kw) if kw else s
+
+
+# ================= VENDOR GUIDE =================
+VENDORS = [
+    {"id": "dell", "name": "Dell", "re": r"dell", "apps": ["Dell Power Manager", "Dell Optimizer", "Dell Command"], "store": "Dell Power Manager"},
+    {"id": "hp", "name": "HP", "re": r"\bhp\b|hewlett", "apps": ["HP Support Assistant", "myHP", "HP Power Manager"], "store": "HP Support Assistant"},
+    {"id": "lenovo", "name": "Lenovo", "re": r"lenovo", "apps": ["Lenovo Vantage", "Vantage"], "store": "Lenovo Vantage"},
+    {"id": "asus", "name": "ASUS", "re": r"asus", "apps": ["MyASUS"], "store": "MyASUS"},
+    {"id": "acer", "name": "Acer", "re": r"acer", "apps": ["Acer Care Center", "Care Center"], "store": "Acer Care Center"},
+    {"id": "msi", "name": "MSI", "re": r"micro-star|\bmsi\b", "apps": ["MSI Center", "Dragon Center"], "store": "MSI Center"},
+    {"id": "samsung", "name": "Samsung", "re": r"samsung", "apps": ["Samsung Settings", "Samsung"], "store": "Samsung Settings"},
+    {"id": "microsoft", "name": "Microsoft Surface", "re": r"microsoft", "apps": ["Surface"], "store": "Surface"},
+    {"id": "fujitsu", "name": "Fujitsu", "re": r"fujitsu", "apps": ["Fujitsu"], "store": None},
+]
+VENDOR_GUIDE = {
+    "dell": {
+        "en": "Dell Power Manager or Dell Optimizer (battery settings), or the BIOS under Power / Battery (Primarily AC use, Custom). battmon controls this directly.",
+        "ms": "Dell Power Manager atau Dell Optimizer (tetapan bateri), atau BIOS di bawah Power / Battery (Primarily AC use, Custom). battmon mengawalnya terus.",
+    },
+    "hp": {
+        "en": "Many Pro and Elite models have Battery Health Manager in the BIOS (restart, press F10, then Advanced > Power Management Options). Some also show it in HP Support Assistant.",
+        "ms": "Banyak model Pro dan Elite ada Battery Health Manager dalam BIOS (restart, tekan F10, kemudian Advanced > Power Management Options). Sesetengah juga tunjuk dalam HP Support Assistant.",
+    },
+    "lenovo": {
+        "en": "Lenovo Vantage has Conservation Mode in its power or battery section. Many ThinkPads also have charge thresholds in Vantage or in the BIOS power page.",
+        "ms": "Lenovo Vantage ada Conservation Mode dalam bahagian power atau battery. Banyak ThinkPad juga ada had cas dalam Vantage atau halaman power BIOS.",
+    },
+    "asus": {
+        "en": "MyASUS > Device Settings > Battery Care mode (some models call it Battery Health Charging).",
+        "ms": "MyASUS > Device Settings > Battery Care mode (sesetengah model namakan Battery Health Charging).",
+    },
+    "acer": {
+        "en": "Acer Care Center has a battery health or charge limit option on many newer models. The exact name depends on the version.",
+        "ms": "Acer Care Center ada pilihan kesihatan bateri atau had cas pada banyak model baharu. Nama tepat bergantung pada versi.",
+    },
+    "msi": {
+        "en": "MSI Center has battery options on many models (a battery care or charge limit scenario). The exact name depends on the version.",
+        "ms": "MSI Center ada pilihan bateri pada banyak model (senario penjagaan bateri atau had cas). Nama tepat bergantung pada versi.",
+    },
+    "samsung": {
+        "en": "Samsung Settings has a battery protection option on many models. The exact name depends on the version.",
+        "ms": "Samsung Settings ada pilihan perlindungan bateri pada banyak model. Nama tepat bergantung pada versi.",
+    },
+    "microsoft": {
+        "en": "On supported Surface models, the Surface app or the UEFI settings have a battery limit option.",
+        "ms": "Pada model Surface yang disokong, app Surface atau tetapan UEFI ada pilihan had bateri.",
+    },
+    "fujitsu": {
+        "en": "Some Fujitsu models shipped a Battery Utility with an 80% charge mode, and the BIOS setup may have a battery page. Check Fujitsu's support site for your exact model. Many tablets have neither.",
+        "ms": "Sesetengah model Fujitsu ada Battery Utility dengan mod cas 80%, dan BIOS mungkin ada halaman bateri. Semak laman sokongan Fujitsu untuk model tepat anda. Banyak tablet tiada kedua-duanya.",
+    },
+}
+
+
+# ===== REPORT BUILDER (pure functions, no UI) =====
+def vendor_for(mfr):
+    m = (mfr or "").lower()
+    for v in VENDORS:
+        if re.search(v["re"], m):
+            return v
+    return None
+
+
+def parse_battery_xml(path):
+    out = []
+    root_el = ET.parse(path).getroot()
+    for el in root_el.iter():
+        if el.tag.split("}")[-1] != "Battery":
+            continue
+        b = {}
+        for c in el:
+            tag = c.tag.split("}")[-1]
+            if len(c) == 0 and (c.text or "").strip():
+                b[tag] = c.text.strip()
+        if "DesignCapacity" in b or "Id" in b:
+            out.append(b)
+    return out
+
+
+def _num(v):
+    try:
+        return int(float(v))
+    except Exception:
+        return None
+
+
+def wh(v):
+    n = _num(v)
+    return "-" if n is None else f"{n / 1000:.2f} Wh"
+
+
+def mask_serial(s):
+    s = (s or "").strip()
+    if not s:
+        return T("nr")
+    if len(s) <= 6:
+        return "*" * len(s)
+    return s[:2] + "*" * (len(s) - 6) + s[-4:]
+
+
+def verdict(pct):
+    if pct >= 80:
+        return T("v_good")
+    if pct >= 60:
+        return T("v_worn")
+    return T("v_weak")
+
+
+def charge_lines(d):
+    info, cap = d["info"], d["cap"]
+    v = vendor_for(info.get("mfr", ""))
+    lines = []
+    if v and v["id"] == "dell":
+        if cap.get("custom"):
+            lines.append(("line", T("charge_dell_ok")))
+        elif cap.get("bios"):
+            lines.append(("line", T("charge_dell_modes")))
+        else:
+            lines.append(("line", T("charge_dell_no")))
+        if cap.get("pw"):
+            lines.append(("line", T("note_pw")))
+    elif v:
+        lines.append(("line", T("charge_vendor", name=v["name"])))
+    else:
+        lines.append(("line", T("charge_unknown")))
+    if v:
+        lines.append(("line", T("guide") + VENDOR_GUIDE[v["id"]][cfg["lang"]]))
+        found = sorted({n for n in d.get("startapps", []) for p in v["apps"] if p.lower() in n.lower()})
+        if found:
+            lines.append(("line", T("tool_found", v=", ".join(found))))
+        else:
+            lines.append(("line", T("tool_missing", v=", ".join(v["apps"]))))
+    lines.append(("line", T("bypass_note")))
+    return lines
+
+
+def observed_lines(h):
+    if len(h) < 5:
+        return [("line", T("obs_none"))]
+    pcts = [x[1] for x in h]
+    lines = [("line", T("obs_range", a=h[0][0].strftime("%Y-%m-%d %H:%M"), b=h[-1][0].strftime("%Y-%m-%d %H:%M"),
+                        lo=min(pcts), hi=max(pcts)))]
+    holds = [x[1] for x in h if x[2] == "hold"]
+    if len(holds) >= 5:
+        p, n = Counter(holds).most_common(1)[0]
+        lines.append(("line", T("obs_full", n=n) if p >= 99 else T("obs_hold", p=p, n=n)))
+    return lines
+
+
+def build_sections(d):
+    info = d["info"]
+    nr = T("nr")
+    yn = lambda x: T("yes") if x else T("no")
+    secs = [(T("sec_laptop"), [
+        ("kv", T("l_maker"), info.get("mfr") or nr),
+        ("kv", T("l_model"), info.get("model") or nr),
+        ("kv", T("l_bios"), info.get("bios") or nr),
+        ("kv", T("l_biosdate"), info.get("biosdate") or nr),
+        ("kv", T("l_admin"), yn(d.get("admin"))),
+        ("kv", T("l_tray"), yn(d.get("tray"))),
+    ])]
+    live = d.get("live", {})
+    bats = d.get("batteries") or []
+    if not bats:
+        bats = [{"DesignCapacity": live.get("design"), "FullChargeCapacity": live.get("full"),
+                 "CycleCount": live.get("cycles")}]
+    for i, b in enumerate(bats, 1):
+        design, full = _num(b.get("DesignCapacity")), _num(b.get("FullChargeCapacity"))
+        items = [
+            ("kv", T("l_id"), b.get("Id") or nr),
+            ("kv", T("l_maker"), b.get("Manufacturer") or nr),
+            ("kv", T("l_chem"), b.get("Chemistry") or nr),
+            ("kv", T("l_serial"), mask_serial(b.get("SerialNumber"))),
+            ("kv", T("l_mfgdate"), b.get("ManufactureDate") or nr),
+            ("kv", T("f_design"), wh(design) if design else nr),
+            ("kv", T("f_full"), wh(full) if full else nr),
+        ]
+        if design and full:
+            pct = full / design * 100
+            items.append(("kv", T("f_health"), f"{pct:.1f} %"))
+            items.append(("kv", T("l_verdict"), verdict(pct)))
+        else:
+            items.append(("kv", T("f_health"), nr))
+        items.append(("kv", T("f_cycles"), b.get("CycleCount") or nr))
+        if i == 1 and live:
+            items.append(("kv", T("l_now"), f"{live.get('pct', '-')}%  ({wh(live.get('rem'))})"))
+            if live.get("volt"):
+                items.append(("kv", T("f_volt"), f"{live['volt'] / 1000:.2f} V"))
+        secs.append((T("l_battery_n", n=i), items))
+    secs.append((T("sec_charge"), charge_lines(d)))
+    secs.append((T("sec_observed"), observed_lines(d.get("hist", []))))
+    secs.append((T("sec_notes"), [
+        ("line", T("mfg_note")),
+        ("line", T("gen", t=datetime.now().strftime("%Y-%m-%d %H:%M"), v=VERSION)),
+    ]))
+    return secs
+
+
+def to_text(secs):
+    title = T("rep_title")
+    out = [title, "=" * len(title), ""]
+    for name, items in secs:
+        out += [name, "-" * len(name)]
+        for it in items:
+            out.append(f"{it[1]}: {it[2]}" if it[0] == "kv" else it[1])
+        out.append("")
+    return "\n".join(out)
+
+
+def to_html(secs):
+    e = _html.escape
+    css = ("body{font-family:Segoe UI,Arial,sans-serif;background:#14161a;color:#e8eaee;max-width:760px;margin:30px auto;padding:0 16px}"
+           "h1{font-size:22px}h2{font-size:13px;letter-spacing:.08em;color:#8b93a1;border-bottom:1px solid #2a2f38;padding-bottom:4px;margin-top:26px}"
+           "table{border-collapse:collapse;width:100%}td{padding:4px 8px;vertical-align:top;font-size:14px}td.k{color:#8b93a1;width:42%}"
+           "p{font-size:14px;line-height:1.5}")
+    parts = ["<!doctype html><html><head><meta charset='utf-8'><title>", e(T("rep_title")), "</title><style>", css,
+             "</style></head><body><h1>", e(T("rep_title")), "</h1>"]
+    for name, items in secs:
+        parts += ["<h2>", e(name), "</h2>"]
+        kv = [x for x in items if x[0] == "kv"]
+        if kv:
+            parts.append("<table>")
+            for it in kv:
+                parts += ["<tr><td class='k'>", e(it[1]), "</td><td>", e(str(it[2])), "</td></tr>"]
+            parts.append("</table>")
+        for it in items:
+            if it[0] == "line":
+                parts += ["<p>", e(it[1]), "</p>"]
+    parts.append("</body></html>")
+    return "".join(parts)
+# ===== END REPORT BUILDER =====
 
 
 # ================= HELPERS =================
@@ -174,6 +457,7 @@ INFO = {"mfr": "", "model": ""}
 try:
     _o = run_ps("$c=Get-CimInstance Win32_ComputerSystem;$c.Manufacturer+'|'+$c.Model")
     INFO["mfr"], _, INFO["model"] = _o.partition("|")
+    INFO["mfr"], INFO["model"] = INFO["mfr"].strip(), INFO["model"].strip()
 except Exception:
     pass
 IS_DELL = "dell" in INFO["mfr"].lower()
@@ -195,14 +479,38 @@ _MUTEX = ctypes.windll.kernel32.CreateMutexW(None, False, "battmon_by_shakir_mut
 if ctypes.windll.kernel32.GetLastError() == 183:
     sys.exit()
 
-import tkinter as tk
-try:
-    import pystray
-    from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    pystray = None
+# ================= ENVIRONMENT CHECK (3): tray support =================
+pystray = Image = ImageDraw = ImageFont = None
 
-# ================= ENVIRONMENT CHECK (3): BIOS support =================
+
+def load_tray_libs():
+    global pystray, Image, ImageDraw, ImageFont
+    try:
+        import pystray as _p
+        from PIL import Image as _I, ImageDraw as _D, ImageFont as _F
+        pystray, Image, ImageDraw, ImageFont = _p, _I, _D, _F
+        return True
+    except ImportError:
+        return False
+
+
+if not load_tray_libs() and not FROZEN and not cfg["no_tray_install"]:
+    if msgbox(T("tray_ask"), 0x24) == 6:
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q",
+                            "pystray", "pillow"], capture_output=True, timeout=300,
+                           stdin=subprocess.DEVNULL, creationflags=0x08000000)
+        except Exception:
+            pass
+        if not load_tray_libs():
+            msgbox(T("tray_fail"), 0x10)
+    else:
+        cfg["no_tray_install"] = True
+        save_cfg()
+
+import tkinter as tk
+
+# ================= ENVIRONMENT CHECK (4): BIOS support =================
 CAP = {"bios": False, "custom": False, "pw": None}
 
 
@@ -237,7 +545,7 @@ def note():
     if CAP["bios"]:
         return ""
     if not IS_DELL:
-        return T("note_other", brand=INFO["mfr"].strip() or "non-Dell")
+        return T("note_other", brand=INFO["mfr"] or "non-Dell")
     return T("note_nobios")
 
 
@@ -306,6 +614,7 @@ state_open = {"v": True}
 drag = {"x": 0, "y": 0}
 pos = {"full": None}
 upd = {"tag": None, "url": None, "shown": False}
+rep = {"win": None, "text": None, "sections": None, "store": None, "row": None}
 
 root = tk.Tk()
 root.title("battmon by Shakir")
@@ -516,6 +825,109 @@ def do_update(e=None):
         msgbox(T("upd_fail", err=ex), 0x10)
 
 
+# ================= BATTERY REPORT WINDOW =================
+def gather():
+    d = {"info": dict(INFO), "admin": bool(ctypes.windll.shell32.IsUserAnAdmin()),
+         "tray": pystray is not None, "cap": dict(CAP), "batteries": [], "startapps": [],
+         "live": {"pct": cur.get("pct"), "rem": wmi.get("rem"), "volt": wmi.get("volt"),
+                  "full": wmi.get("full"), "design": wmi.get("design"), "cycles": wmi.get("cycles")},
+         "hist": list(hist)}
+    try:
+        o = json.loads(run_ps("$ErrorActionPreference='SilentlyContinue';$b=Get-CimInstance Win32_BIOS|select -first 1;"
+                              "[pscustomobject]@{v=$b.SMBIOSBIOSVersion;d=$(if($b.ReleaseDate){([datetime]$b.ReleaseDate).ToString('yyyy-MM-dd')})}|ConvertTo-Json -Compress"))
+        d["info"]["bios"], d["info"]["biosdate"] = o.get("v"), o.get("d")
+    except Exception:
+        pass
+    try:
+        path = os.path.join(tempfile.gettempdir(), "battmon_batteryreport.xml")
+        if os.path.exists(path):
+            os.remove(path)
+        subprocess.run(["powercfg", "/batteryreport", "/xml", "/output", path], capture_output=True, timeout=60,
+                       stdin=subprocess.DEVNULL, creationflags=0x08000000)
+        d["batteries"] = parse_battery_xml(path)
+    except Exception:
+        pass
+    try:
+        names = json.loads(run_ps("Get-StartApps | Select-Object -ExpandProperty Name | ConvertTo-Json -Compress"))
+        d["startapps"] = [names] if isinstance(names, str) else list(names)
+    except Exception:
+        pass
+    return d
+
+
+def mkbtn(parent, text, cmd):
+    return tk.Button(parent, text=text, command=cmd, bg="#2a2f38", fg=FG, activebackground="#3a4150",
+                     activeforeground=FG, relief="flat", bd=0, padx=14, pady=5,
+                     font=("Segoe UI", 9, "bold"), cursor="hand2")
+
+
+def fill_report(d):
+    win = rep["win"]
+    if win is None or not win.winfo_exists():
+        return
+    secs = build_sections(d)
+    rep["sections"] = secs
+    t = rep["text"]
+    t.config(state="normal")
+    t.delete("1.0", "end")
+    t.insert("1.0", to_text(secs))
+    t.config(state="disabled")
+    v = vendor_for(d["info"].get("mfr", ""))
+    if v and v.get("store") and rep["store"] is None:
+        rep["store"] = mkbtn(rep["row"], T("btn_store"),
+                             lambda q=v["store"]: os.startfile("ms-windows-store://search/?query=" + urllib.parse.quote(q)))
+        rep["store"].pack(side="left", padx=(0, 6))
+
+
+def save_report():
+    if not rep["sections"]:
+        return
+    try:
+        from tkinter import filedialog
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        path = filedialog.asksaveasfilename(parent=rep["win"], defaultextension=".html",
+                                            initialfile=f"battmon-report-{stamp}.html",
+                                            filetypes=[("HTML", "*.html"), ("Text", "*.txt")])
+        if not path:
+            return
+        content = to_html(rep["sections"]) if path.lower().endswith(".html") else to_text(rep["sections"])
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        msgbox(T("saved", p=path))
+    except Exception as ex:
+        msgbox(T("save_fail", err=ex), 0x10)
+
+
+def open_report(e=None):
+    if rep["win"] is not None and rep["win"].winfo_exists():
+        rep["win"].lift()
+        return
+    win = tk.Toplevel(root)
+    win.title(T("rep_win_title"))
+    win.configure(bg=BG)
+    win.attributes("-topmost", True)
+    vl, vt, vr, vb = virtual_screen()
+    x = root.winfo_x() + root.winfo_width() + 10
+    if x + 600 > vr:
+        x = max(root.winfo_x() - 610, vl)
+    win.geometry(f"+{x}+{max(root.winfo_y(), vt)}")
+    txt = tk.Text(win, width=72, height=32, bg="#0d0f12", fg=FG, font=("Consolas", 9), wrap="word",
+                  relief="flat", padx=10, pady=8)
+    txt.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+    txt.insert("1.0", T("loading"))
+    txt.config(state="disabled")
+    row = tk.Frame(win, bg=BG)
+    row.pack(fill="x", padx=10, pady=(0, 10))
+    mkbtn(row, T("btn_save"), save_report).pack(side="left", padx=(0, 6))
+    mkbtn(row, T("btn_close"), win.destroy).pack(side="right")
+    rep.update({"win": win, "text": txt, "sections": None, "store": None, "row": row})
+
+    def work():
+        d = gather()
+        root.after(0, lambda: fill_report(d))
+    threading.Thread(target=work, daemon=True).start()
+
+
 # ================= LAYOUT =================
 logo_img = None
 if LOGO_B64.strip():
@@ -617,9 +1029,7 @@ modes = ["Standard", "PrimAcUse"]
 if CAP["custom"]:
     modes.append("Custom")
 for key in modes:
-    b = tk.Button(mrow, text=T("btn_" + key), command=lambda k=key: pick(k), bg="#2a2f38", fg=FG,
-                  activebackground="#3a4150", activeforeground=FG, relief="flat", bd=0,
-                  padx=14, pady=5, font=("Segoe UI", 9, "bold"), cursor="hand2")
+    b = mkbtn(mrow, T("btn_" + key), lambda k=key: pick(k))
     b.pack(side="left", padx=(0, 6))
     mode_btns[key] = b
     Tip(b, "tip_" + key)
@@ -655,28 +1065,11 @@ def dot():
     tk.Label(foot, text="·", fg=DIM, bg=BG, font=("Segoe UI", 8)).pack(side="left", padx=4)
 
 
-def show_report():
-    admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
-    pw = CAP["pw"]
-    lines = [T("rep_laptop", v=(INFO["mfr"] + " " + INFO["model"]).strip() or "?"),
-             T("rep_batt"),
-             T("rep_admin", v=T("yes") if admin else T("no")),
-             T("rep_bios", v=T("found") if CAP["bios"] else T("notfound"))]
-    if CAP["bios"]:
-        lines.append(T("rep_custom", v=T("supported") if CAP["custom"] else T("unsupported")))
-        lines.append(T("rep_pw", v=T("pw_set") if pw else (T("pw_none") if pw is False else T("unknown"))))
-        lines.append(T("rep_restart"))
-    else:
-        lines.append("")
-        lines.append(note())
-    msgbox(T("rep_title") + "\n\n" + "\n".join(lines))
-
-
 link("LinkedIn", url=LINKEDIN).pack(side="left")
 dot()
 link("GitHub", url=GITHUB).pack(side="left")
 dot()
-check_lbl = link(T("check"), cmd=show_report)
+check_lbl = link(T("check"), cmd=open_report)
 check_lbl.pack(side="left")
 tk.Label(foot, text=f"v{VERSION}", fg=DIM, bg=BG, font=("Segoe UI", 8)).pack(side="right")
 upd_lbl = tk.Label(body, text="", fg="#000000", bg=GREEN, font=("Segoe UI", 9, "bold"), cursor="hand2", padx=8, pady=4, wraplength=W - 16)
@@ -848,7 +1241,7 @@ def update_tray(pct, col):
 def hide_tray(e=None):
     if tray["icon"]:
         root.withdraw()
-    else:
+    elif msgbox(T("close_quit"), 0x24) == 6:
         root.destroy()
 
 

@@ -10,15 +10,17 @@ Made by [Abdul Shakir Hakim](https://www.linkedin.com/in/abdulshakirhakim/).
 - Battery details: voltage, charge rate, capacity, health and cycle count
 - Charge limit control (50%, 80%, 90%) on Dell laptops through the Dell BIOS WMI interface
 - Works on any Windows laptop as a monitor. Charge control is Dell only for now
-- Startup system check that detects the battery, laptop brand, admin rights, BIOS interface and BIOS admin password. Click "System check" in the widget to see the report
+- Battery report: laptop and battery info, health verdict, charge cutoff/bypass support for your brand, where to find your brand's own tool, and observed cutoff behaviour from battmon's own log. Save it as HTML or text
+- Startup checks: battery present, laptop brand, admin rights, BIOS interface, BIOS admin password, and tray support
+- The close button hides battmon to the system tray instead of quitting. If the tray packages are missing, battmon offers to install them
 - English and Malay (click EN/MY in the header, your choice is remembered)
-- Compact mode, system tray icon, and an hourly update check against GitHub Releases
+- Compact mode, and an hourly update check against GitHub Releases
 
 ## Requirements
 
 - Windows 10 or 11
 - Python 3.9+
-- Optional: `pip install pystray pillow` for the tray icon
+- Tray icon packages `pystray` and `pillow` (battmon offers to install them on first run)
 - For charge limit control: a Dell laptop that exposes `root\dcim\sysman\biosattributes`. The app asks for administrator rights (UAC) only on Dell machines. Changes apply immediately, no restart needed
 
 ## Run
@@ -31,7 +33,9 @@ Or double-click `battmon.pyw`.
 
 ## Other laptop brands
 
-Every brand uses its own BIOS or driver interface for charge limits, so battmon only controls Dell for now. On other brands it runs as a monitor and points you to the vendor tool (for example Lenovo Vantage, MyASUS or the battery setting in HP BIOS). Pull requests and issues for other brands are welcome.
+Every brand uses its own BIOS or app for charge limits, so battmon only controls Dell for now. On other brands it runs as a monitor. The battery report tells you what is usually available for your brand (for example HP Battery Health Manager in the BIOS, Lenovo Vantage Conservation Mode, MyASUS Battery Care) and whether the vendor tool is installed. It depends on the exact model, so treat it as a pointer, not a guarantee. Issues and pull requests for other brands are welcome.
+
+True bypass charging (battery fully out of the power path) is rare and battmon cannot detect it. Cutoff behaviour can be spotted from the log: if the laptop holds below 100% while plugged in, the report says so.
 
 ## Updates
 
