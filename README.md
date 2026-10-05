@@ -16,6 +16,21 @@ Made by Me[Abdul Shakir Hakim](https://www.linkedin.com/in/abdulshakirhakim/).
 - English and Malay (click EN/MY in the header, your choice is remembered)
 - Compact mode, and an hourly update check against GitHub Releases
 
+## Download
+
+Clone the repo (needs Git):
+
+```
+git clone https://github.com/Hanricus/battmon.git
+cd battmon
+```
+
+Or just download the script with PowerShell:
+
+```
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/Hanricus/battmon/main/battmon.pyw -OutFile battmon.pyw
+```
+
 ## Requirements
 
 - Windows 10 or 11
